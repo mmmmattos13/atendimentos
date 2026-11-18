@@ -72,21 +72,17 @@ function toast(msg, erro) {
 const erroBox = (el, msg) => { el.innerHTML = msg ? `<div class="err">${esc(msg)}</div>` : ''; };
 
 // --------------------------------------------------------------- comarcas padronizadas
-// chave para comparar sem diferença de maiúscula, acento ou espaço: "ATIBÁIA " == "atibaia"
 const chaveComarca = v => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-// "BOM JESUS DOS PERDOES" -> "Bom Jesus dos Perdoes" (mantém os acentos digitados)
 function tituloComarca(v) {
   const peq = ['de', 'da', 'do', 'das', 'dos', 'e'];
   return String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim().split(' ')
     .map((p, i) => i && peq.includes(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 const listaComarcas = () => S.comarcasOficiais || [];
-// devolve o nome oficial da comarca (ou null se não estiver na lista)
 function comarcaOficial(v) {
   const k = chaveComarca(v); if (!k) return null;
   return listaComarcas().find(c => chaveComarca(c) === k) || null;
 }
-// nome para exibir/agrupar: oficial se existir, senão o texto padronizado
 const nomeComarca = v => comarcaOficial(v) || tituloComarca(v);
 
 // --------------------------------------------------------------- normalização (formulário e importação)
@@ -110,7 +106,7 @@ function normHomeLocal(v) {
 function normDataHora(v) {
   if (v === undefined || v === null || v === '') return '';
   const p = n => String(n).padStart(2, '0');
-  if (typeof v === 'number' && v > 1) { // número de série do Excel
+  if (typeof v === 'number' && v > 1) { 
     const d = new Date(Math.round((v - 25569) * 1440) * 60000);
     return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
   }
@@ -142,8 +138,59 @@ function validar(at) {
   return null;
 }
 
-// --------------------------------------------------------------- campanha do mês (cores de conscientização)
-// claro: true = cor clara, usa texto escuro na barra do topo
+// --------------------------------------------------------------- regras de perfil e fila home office
+function filtrarChamadosPorPerfil(lista) {
+  if (isAdmin()) return lista;
+  return lista.filter(x => x.uid === S.perfil.id || (Array.isArray(x.uids) && x.uids.includes(S.perfil.id)));
+}
+
+const COMARCAS_HOME_FILA = ['Bragança Paulista', 'Atibaia', 'Guarulhos'];
+
+function obterProximaComarcaHome(comarcaAtual) {
+  const norm = chaveComarca(comarcaAtual);
+  let index = COMARCAS_HOME_FILA.findIndex(c => chaveComarca(c) === norm);
+  if (index === -1) index = 0;
+  const proximaIndex = (index + 1) % COMARCAS_HOME_FILA.length;
+  return COMARCAS_HOME_FILA[proximaIndex];
+}
+
+function verificarPopupFilaHomeOffice(atendimentoAntigo, atendimentoNovo) {
+  const foiFechadoAgora = atendimentoNovo.status === 'FECHADO' && (!atendimentoAntigo || atendimentoAntigo.status !== 'FECHADO');
+  if (foiFechadoAgora && atendimentoNovo.home_local === 'HOME') {
+    const comarcaAtual = atendimentoNovo.comarca;
+    const proximaComarca = obterProximaComarcaHome(comarcaAtual);
+
+    setTimeout(() => {
+      modal(
+        '🔄 Fila de Atendimento Home Office',
+        `<div style="padding: 10px 0;">
+           <p>O atendimento <b>HOME</b> da comarca <b>${esc(comarcaAtual)}</b> foi fechado.</p>
+           <p>Próximo da fila para atendimento Home Office:</p>
+           <div style="background: var(--brand-soft, #eef1f5); color: var(--brand, #1f2937); padding: 12px; border-radius: 8px; text-align: center; font-size: 16px; font-weight: bold; margin: 12px 0;">
+             📍 Comarca: ${esc(proximaComarca)}
+           </div>
+           <p class="hint">Deseja abrir um novo atendimento Home para esta comarca agora?</p>
+         </div>`,
+        [
+          { t: 'Fechar' },
+          { 
+            t: 'Criar Atendimento Home', 
+            primary: true, 
+            fn: () => {
+              setTimeout(() => {
+                formAtendimento({ home_local: 'HOME', comarca: proximaComarca });
+              }, 200);
+              return true;
+            } 
+          }
+        ],
+        'sm'
+      );
+    }, 300);
+  }
+}
+
+// --------------------------------------------------------------- campanha do mês
 const CAMPANHAS = [
   { mes: 'Janeiro', nome: 'Janeiro Branco', cor: '#eef1f5', claro: true, tema: 'Saúde mental',
     texto: 'Mês de cuidar da saúde mental e emocional. Converse, peça ajuda e acolha quem precisa. Apoio emocional gratuito: CVV 188 (24h).' },
@@ -170,7 +217,6 @@ const CAMPANHAS = [
   { mes: 'Dezembro', nome: 'Dezembro Vermelho', cor: '#b3202a', tema: 'HIV/AIDS',
     texto: 'Prevenção ao HIV/AIDS e outras ISTs. Faça o teste: é gratuito no SUS, e o tratamento também.' },
 ];
-// dentro do sistema segue o mês selecionado no filtro; na tela de login, o mês de hoje
 const campanhaAtual = () => CAMPANHAS[S.perfil && S.perfil.ativo && S.mes ? Number(S.mes.slice(5, 7)) - 1 : new Date().getMonth()];
 function seloCampanha() {
   const c = campanhaAtual();
@@ -188,16 +234,12 @@ function ligarCampanha(raiz = document) {
   btn.onclick = e => { e.stopPropagation(); const ab = box.classList.toggle('aberta'); btn.setAttribute('aria-expanded', ab); };
   $('.campanha-aviso', box).onclick = e => e.stopPropagation();
 }
-// fecha o aviso ao clicar fora ou apertar Esc (um único ouvinte para a página toda)
 const fecharCampanha = () => $$('.campanha.aberta').forEach(b => { b.classList.remove('aberta'); $('.campanha-btn', b).setAttribute('aria-expanded', 'false'); });
 document.addEventListener('click', fecharCampanha);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharCampanha(); });
 
 // --------------------------------------------------------------- fluxo de login
 let iniciado = false;
-// --------------------------------------------------------------- atualização automática
-// Cada versão publicada tem um número. O sistema confere o arquivo versao.json (sem cache)
-// ao abrir, a cada 5 minutos e quando a aba volta a ficar visível. Se mudou, recarrega sozinho.
 const VERSAO = '20261118e';
 let versaoNova = null;
 async function conferirVersao() {
@@ -206,30 +248,26 @@ async function conferirVersao() {
     if (!r.ok) return;
     const v = String((await r.json()).versao || '');
     if (!v || v === VERSAO) return;
-    // proteção: se já recarregou para essa versão e continua a antiga (ex.: app.js não foi enviado), não fica em loop
     let ja = null; try { ja = sessionStorage.getItem('recarregouPara'); } catch {}
     if (ja === v) return;
     versaoNova = v; aplicarVersao();
-  } catch { /* sem internet: tenta de novo depois */ }
+  } catch {}
 }
 function aplicarVersao() {
   if (!versaoNova) return;
-  // não interrompe quem está preenchendo um formulário: atualiza quando ele fechar
   if (document.querySelector('.overlay')) { avisoVersao(); return; }
   try { sessionStorage.setItem('recarregouPara', versaoNova); } catch {}
   const u = new URL(location.href); u.searchParams.set('v', versaoNova);
-  location.replace(u.toString());   // endereço novo = o navegador baixa tudo de novo
+  location.replace(u.toString());
 }
-// sem mensagem: espera a pessoa fechar o formulário e então atualiza em silêncio
 function avisoVersao() {
   if (avisoVersao.ligado) return; avisoVersao.ligado = true;
   const obs = new MutationObserver(() => { if (!document.querySelector('.overlay')) { obs.disconnect(); avisoVersao.ligado = false; aplicarVersao(); } });
   obs.observe(document.body, { childList: true });
 }
-// tira o ?v=... do endereço depois que carregou (fica mais limpo)
 if (new URL(location.href).searchParams.has('v')) { const u = new URL(location.href); u.searchParams.delete('v'); history.replaceState(null, '', u.toString()); }
 
-// --------------------------------------------------------------- créditos (escondidos: 10 cliques no logo)
+// --------------------------------------------------------------- créditos
 function creditos() {
   modal('🎉 Você achou os créditos!', `<div class="creditos">
       <div class="cred-logo"><i></i></div>
@@ -241,7 +279,7 @@ function creditos() {
 }
 creditos.cliques = 0; creditos.ultimo = 0;
 
-// --------------------------------------------------------------- exclusão em massa e Lixeira (só o líder)
+// --------------------------------------------------------------- exclusão em massa e Lixeira
 const DIAS_LIXEIRA = 30;
 function excluirEmMassa(itens, depois) {
   if (!itens.length) return;
@@ -261,7 +299,6 @@ function excluirEmMassa(itens, depois) {
 }
 async function telaLixeira() {
   let l; try { l = await api.listarLixeira(); } catch (e) { return toast(e.message, true); }
-  // apaga de vez o que está na lixeira há mais de 30 dias
   const limite = Date.now() - DIAS_LIXEIRA * 86400000;
   const vencidos = l.filter(a => new Date(a.lixeira.em).getTime() < limite);
   if (vencidos.length) { try { await api.excluirDefinitivo(vencidos.map(a => a.id)); } catch {} l = l.filter(a => !vencidos.includes(a)); }
@@ -293,9 +330,7 @@ async function telaLixeira() {
 }
 
 // --------------------------------------------------------------- cache dos chamados do mês
-// A 1ª vez (e no ↻ Atualizar) lê o mês inteiro. Depois, o automático só busca o que foi alterado
-// desde a última busca. Isso economiza as leituras do plano grátis do Firebase (50 mil por dia).
-const MARGEM_RELOGIO = 10 * 60 * 1000;   // folga para diferença de relógio entre o computador e o servidor
+const MARGEM_RELOGIO = 10 * 60 * 1000;
 S.cache = { mes: null, docs: null, quando: 0 };
 const doMes = (d, mes) => d.mes === mes || (Array.isArray(d.meses) && d.meses.includes(mes));
 async function docsDoMes(mes, completo) {
@@ -317,8 +352,6 @@ const doTecnico = (l, uid) => uid ? l.filter(x => x.uid === uid || (Array.isArra
 function esquecerNoCache(id) { if (S.cache.docs) S.cache.docs.delete(id); }
 
 // --------------------------------------------------------------- botão ↻ Atualizar
-// Dados: atualiza sozinho a cada 2 minutos e quando a aba volta a ficar visível (se nenhum formulário estiver aberto).
-// Clique no botão: atualiza os dados e confere se saiu versão nova do sistema (equivale ao Ctrl+F5).
 const TELAS_ATU = ['atendimentos', 'agenda', 'painel'];
 let ultimaAtu = Date.now(), atualizando = false;
 const botaoAtu = () => `<span class="atu"><button class="btn" id="atu" title="Busca o que a equipe registrou e confere se saiu versão nova do sistema">↻ Atualizar</button></span>`;
@@ -349,7 +382,6 @@ async function atualizarTela(manual) {
   } catch (e) { if (manual) toast(e.message, true); }
   finally { atualizando = false; const b2 = $('#atu'); if (b2) { b2.disabled = false; b2.textContent = '↻ Atualizar'; } }
 }
-// no automático, só redesenha o Painel/Agenda se algo mudou (evita a tela piscar à toa)
 async function mudou(tela) {
   try {
     const l = tela === 'painel' ? await docsDoMes(S.mes) : (await api.listarAgendados({ uid: isAdmin() ? null : S.perfil.id })).filter(foraDaLixeira);
@@ -363,7 +395,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 api.aoMudarLogin(async conta => {
   S.conta = conta; S.perfil = null; S.usuarios = null; S.erroPerfil = null; S.filtros.tecnico = null;
-  if (conta) S.telaAuth = 'entrar'; // ao sair, volta para a tela de login
+  if (conta) S.telaAuth = 'entrar';
   if (conta && conta.verificado && emailDaEmpresa(conta.email)) {
     try {
       S.perfil = await api.meuPerfil();
@@ -508,9 +540,7 @@ function layout(r) {
   $('#meBtn').onclick = e => { e.stopPropagation(); $('#meMenu').classList.toggle('open'); };
   document.onclick = () => $('#meMenu') && $('#meMenu').classList.remove('open');
   ligarCampanha($('header.top'));
-  // logo: volta para a tela principal (se já estiver nela, recarrega a lista)
   $('#logoInicio').onclick = e => {
-    // surpresa: 10 cliques seguidos no logo mostram os créditos
     const t = Date.now(); creditos.cliques = (t - creditos.ultimo < 1500 ? creditos.cliques : 0) + 1; creditos.ultimo = t;
     if (creditos.cliques >= 10) { e.preventDefault(); creditos.cliques = 0; return creditos(); }
     if (rota() === 'atendimentos') { e.preventDefault(); scrollTo(0, 0); if (creditos.cliques === 1) render(); }
@@ -580,17 +610,16 @@ async function telaAtendimentos(main) {
       ${S.mes === mesAtual() ? '<button type="button" class="btn" id="fHoje">Hoje</button>' : ''}
       <input type="search" id="fQ" placeholder="Buscar SMAX, comarca, ticket, usuário…" value="${esc(S.filtros.q)}">
       <select id="fSt" aria-label="Status"><option value="">Todos os status</option>${[...STATUS, 'DEVOLVIDO'].map(x => `<option ${S.filtros.status === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
-      <select id="fTec" aria-label="Técnico"><option value="">${admin ? 'Todos os técnicos' : 'Toda a equipe'}</option>${equipe.map(t => `<option value="${t.id}" ${S.filtros.tecnico === t.id ? 'selected' : ''}>${t.id === S.perfil.id ? 'Só os meus' : esc(t.nome)}</option>`).join('')}</select>
+      ${admin ? `<select id="fTec" aria-label="Técnico"><option value="">Todos os técnicos</option>${equipe.map(t => `<option value="${t.id}" ${S.filtros.tecnico === t.id ? 'selected' : ''}>${esc(t.nome)}</option>`).join('')}</select>` : ''}
     </div>
     ${admin ? '<div class="acoes-sel" id="acoesSel" hidden></div>' : ''}
     <div class="card"><div class="tablewrap" id="tab"><div class="empty">Carregando…</div></div></div>`;
   $('#novo').onclick = () => formAtendimento(null);
   if (admin) $('#btnLixeira').onclick = () => telaLixeira();
-  const sel = new Set();   // chamados marcados (só o líder)
+  const sel = new Set();
   $('#exp').onclick = exportarExcel;
   $('#fMes').onchange = e => { if (e.target.value) { S.mes = e.target.value; S.filtros.dia = ''; render(); } };
   if (S.filtros.dia && S.filtros.dia.slice(0, 7) !== S.mes) S.filtros.dia = '';
-  // barra que aparece quando o líder marca chamados
   function barraSel(lista) {
     const el = $('#acoesSel'); if (!el) return;
     [...sel].forEach(id => { if (!base.some(a => a.id === id)) sel.delete(id); });
@@ -605,16 +634,20 @@ async function telaAtendimentos(main) {
   if ($('#fHoje')) $('#fHoje').onclick = () => { S.filtros.dia = hojeISO(); mostrar(); };
   let deb; $('#fQ').oninput = e => { clearTimeout(deb); deb = setTimeout(() => { S.filtros.q = e.target.value; mostrar(); }, 200); };
   $('#fSt').onchange = e => { S.filtros.status = e.target.value; mostrar(); };
-  $('#fTec').onchange = e => { S.filtros.tecnico = e.target.value; carregar(); };
+  if ($('#fTec')) $('#fTec').onchange = e => { S.filtros.tecnico = e.target.value; carregar(); };
 
   let base = [];
   async function carregar(completo) {
-    try { base = ordenar(doTecnico(await docsDoMes(S.mes, completo), S.filtros.tecnico || null)); }
+    try { 
+      let docs = await docsDoMes(S.mes, completo);
+      // Aplicar estritamente o filtro de perfil: técnicos comuns veem apenas os seus próprios chamados
+      docs = filtrarChamadosPorPerfil(docs);
+      base = ordenar(doTecnico(docs, admin ? (S.filtros.tecnico || null) : S.perfil.id)); 
+    }
     catch (e) { toast(e.message, true); base = []; }
     S.comarcas = [...new Set([...(S.comarcas || []), ...base.map(a => a.comarca).filter(Boolean)])];
     mostrar();
   }
-  // lista de dias do mês com a quantidade de registros de cada um
   function opcoesDias() {
     const [y, m] = S.mes.split('-').map(Number), n = new Date(y, m, 0).getDate();
     const cont = {}; explodir(base, S.mes).forEach(a => { cont[a.data_ref] = (cont[a.data_ref] || 0) + 1; });
@@ -622,7 +655,7 @@ async function telaAtendimentos(main) {
     let html = '<option value="">Todos os dias</option>';
     for (let d = 1; d <= n; d++) {
       const iso = `${S.mes}-${String(d).padStart(2, '0')}`, q = cont[iso] || 0;
-      html += `<option value="${iso}" ${S.filtros.dia === iso ? 'selected' : ''}>${String(d).padStart(2, '0')}/${S.mes.slice(5, 7)} (${sem[new Date(y, m - 1, d).getDay()]})${q ? ` — ${q}` : ''}</option>`;
+      html += `<option value="${iso}" ${S.filtros.dia === iso ? 'selected' : ''}>${String(d).padStart(2, '0')}/${S.mes.slice(5, 7)} (${sem[new Date(y, m - 1, d).getDay()]}${q ? ` — ${q}` : ''})</option>`;
     }
     $('#fDia').innerHTML = html;
   }
@@ -646,7 +679,7 @@ async function telaAtendimentos(main) {
       $('#tab').innerHTML = `<div class="empty">Nenhum atendimento ${S.filtros.dia ? 'em ' + fmtData(S.filtros.dia) : 'em ' + esc(nomeMes(S.mes))}${q || S.filtros.status ? ' com esses filtros' : ''}.<br><br><button class="btn primary" id="novo2">+ Registrar atendimento</button></div>`;
       $('#novo2').onclick = () => formAtendimento(null); barraSel(lista); return;
     }
-    const mostraTec = S.filtros.tecnico !== S.perfil.id;
+    const mostraTec = admin && S.filtros.tecnico !== S.perfil.id;
     const todosMarcados = lista.length && lista.every(a => sel.has(a.id));
     $('#tab').innerHTML = `<table><thead><tr>
       ${admin ? `<th class="col-sel"><input type="checkbox" id="selTodos" title="Marcar todos os chamados da lista (com os filtros atuais)" ${todosMarcados ? 'checked' : ''}></th>` : ''}<th>Solicitação SMAX</th><th>Comarca</th><th>Início</th><th>Término</th><th class="num" title="Soma das idas do chamado">Tempo</th><th>Ticket Softplan</th><th>Status</th><th>Encaminhado p/</th><th>Home/Local</th>${mostraTec ? '<th>Técnico</th>' : ''}</tr></thead>
@@ -671,8 +704,7 @@ async function telaAtendimentos(main) {
   if (admin) avisoFormatoAntigo();
 }
 
-// ---------- conversão: chamados reabertos no formato antigo (um registro por ida) viram um chamado só
-function cadeiasAntigas(todos) {
+async function cadeiasAntigas(todos) {
   const porId = new Map(todos.map(x => [x.id, x])), grupos = new Map();
   todos.filter(x => x.origem && porId.has(x.origem)).forEach(x => { (grupos.get(x.origem) || grupos.set(x.origem, []).get(x.origem)).push(x); });
   return [...grupos.entries()].map(([orig, l]) => [porId.get(orig), ...l.sort((a, b) => (a.ida || 1) - (b.ida || 1) || (a.inicio || '').localeCompare(b.inicio || ''))]);
@@ -710,19 +742,15 @@ const desligado = uid => !!((S.usuarios || []).find(x => x.id === uid) || {}).de
 const marcaDesligado = uid => desligado(uid) ? ' <span class="tag-deslig">desligado</span>' : '';
 function nomeDe(uid, reserva) { const u = (S.usuarios || []).find(x => x.id === uid); return u ? u.nome : (reserva || '—'); }
 
-// ---------- idas de um chamado
-// Um chamado = um registro. Os campos de cima são a ida ATUAL; as idas anteriores ficam em "idas" (travadas).
 const CAMPOS_IDA = ['uid', 'tecnico', 'inicio', 'termino', 'status', 'encaminhado_para', 'home_local', 'agendamento', 'agendamento_fim', 'dia_inteiro', 'juri', 'usuario_atendido', 'obs', 'data_ref', 'mes'];
 const idasFechadas = doc => Array.isArray(doc.idas) ? doc.idas : [];
 const numIdas = doc => idasFechadas(doc).length + 1;
 const parado = ida => { const de = ida.termino || ida.inicio, ate = ida.devolucao && ida.devolucao.em; if (!de || !ate) return null; const m = Math.round((new Date(ate) - new Date(de)) / 60000); return isNaN(m) || m < 0 ? null : m; };
-// transforma cada chamado em uma linha por ida (é assim que o painel conta)
 function explodir(docs, mes) {
   const out = [];
   docs.forEach(doc => {
     const base = { smax: doc.smax, comarca: doc.comarca, ticket_softplan: doc.ticket_softplan, id: doc.id, _doc: doc };
     const fe = idasFechadas(doc);
-    // _reaberto = esta ida existe porque a anterior foi devolvida pelo setor (agendamento não conta como reabertura)
     fe.forEach((x, i) => out.push({ ...base, ...x, _ida: i + 1, _fechada: true, _statusOrig: x.status, status: x.devolucao ? 'DEVOLVIDO' : x.status, _reaberto: i > 0 && !!fe[i - 1].devolucao }));
     out.push({ ...doc, _doc: doc, _ida: fe.length + (doc.ida || 1), _reaberto: fe.length ? !!fe[fe.length - 1].devolucao : (doc.ida || 1) > 1 });
   });
@@ -750,9 +778,9 @@ function blocoIdas(doc, encerrando) {
 }
 
 function formAtendimento(a, opts = {}) {
-  const chamado = opts.novaIda ? a : null;   // chamado que voltou do setor (ou agendamento a atender): vai ganhar uma ida nova
+  const chamado = opts.novaIda ? a : null;
   const agend = !!(chamado && opts.agendado);
-  const reag = !!(chamado && opts.reagendar);   // reagendar: o contato de hoje vira uma ida (conta hoje) e o chamado fica agendado para a nova data
+  const reag = !!(chamado && opts.reagendar);
   const novo = !a;
   const fech = chamado ? idasFechadas(chamado) : (a ? idasFechadas(a) : []);
   if (chamado) a = { inicio: agend ? (chamado.agendamento || agoraLocal()) : agoraLocal(), status: reag ? 'AGENDADO' : '', home_local: agend || reag ? chamado.home_local : '', uid: S.perfil.id, smax: chamado.smax, comarca: chamado.comarca, ticket_softplan: chamado.ticket_softplan, usuario_atendido: chamado.usuario_atendido };
@@ -826,7 +854,6 @@ function formAtendimento(a, opts = {}) {
   const salvar = async ov => {
     const f = $('#fa', ov); const d = Object.fromEntries(new FormData(f));
     $$('.seg', f).forEach(sg => { const on = $('button.on', sg); d[sg.dataset.name] = on ? on.dataset.v : ''; });
-    // agendamento: junta data + horários (dia inteiro / júri = 09:00 às 17:00)
     d.dia_inteiro = !!f.dia_inteiro.checked || !!f.juri.checked; d.juri = !!f.juri.checked;
     if (d.dia_inteiro) { d.ag_ini = DIA_INTEIRO[0]; d.ag_fim = DIA_INTEIRO[1]; }
     d.agendamento = d.ag_data ? `${d.ag_data}T${d.ag_ini || DIA_INTEIRO[0]}` : '';
@@ -845,13 +872,11 @@ function formAtendimento(a, opts = {}) {
     const at = montarAtendimento(d, uid, nomeDe(uid, S.perfil.nome));
     if (chamado || fech.length) at.smax = (chamado || a).smax;
     const er = validar(at); if (er) { erroBox($('#e', ov), er); ov.scrollTop = 0; return false; }
-    // comarca: só aceita da lista oficial (grava sempre com o nome padronizado)
     if (listaComarcas().length) {
       const ofi = comarcaOficial(at.comarca);
       if (!ofi) { avisoComarca($('#e', ov), at.comarca, ov); ov.scrollTop = 0; return false; }
       at.comarca = ofi;
     } else at.comarca = tituloComarca(at.comarca);
-    // não deixa registrar o mesmo número de chamado SMAX duas vezes
     if (at.smax && !chamado && (novo || at.smax !== a.smax)) {
       const dup = await smaxDuplicado(at.smax, a.id);
       if (dup) { avisoDuplicado($('#e', ov), dup, ov); ov.scrollTop = 0; return false; }
@@ -860,7 +885,6 @@ function formAtendimento(a, opts = {}) {
     const agora = agoraLocal();
     let idas = fech, hist = Array.isArray((chamado || a).historico) ? [...(chamado || a).historico] : [];
     if (chamado) {
-      // encerra a ida atual (fica travada) e abre a nova
       const enc = {}; CAMPOS_IDA.forEach(k => { enc[k] = chamado[k] ?? ''; });
       if (reag) enc.reagendamento = { motivo: d.reag_motivo, para: d.reag_para, em: agora, por: S.perfil.nome };
       else if (!agend) enc.devolucao = { setor: d.dev_setor, motivo: d.dev_motivo, em: normDataHora(d.dev_em) || agora, por: S.perfil.nome };
@@ -873,6 +897,10 @@ function formAtendimento(a, opts = {}) {
     at.meses = mesesDe(idas, at); at.uids = uidsDe(idas, at);
     try {
       await api.salvarAtendimento(novo ? null : (chamado || a).id, at);
+      
+      // Acionar verificação da fila rotativa Home Office se o atendimento foi fechado agora
+      verificarPopupFilaHomeOffice(a, at);
+
       toast(reag ? `Reagendado para ${fmtAgenda(d.reag_para)} (${ordinal(ida)}).` : agend ? `Agendamento atendido (${ordinal(ida)}) no chamado ${at.smax}.` : chamado ? `${ordinal(ida)} registrada no chamado ${at.smax}.` : novo ? 'Atendimento registrado.' : 'Atendimento atualizado.');
       if (at.mes !== S.mes && novo) toast(`Registrado em ${nomeMes(at.mes)} (data do início).`);
       S.comarcas = [at.comarca, ...(S.comarcas || [])];
@@ -885,14 +913,12 @@ function formAtendimento(a, opts = {}) {
     if (!confirm(`${fech.length ? `Excluir o chamado inteiro (${fech.length + 1} idas)?` : 'Excluir este atendimento?'}\n\nEle vai para a Lixeira, e o líder pode restaurar em até ${DIAS_LIXEIRA} dias.`)) return false;
     try { await api.moverParaLixeira([a.id], S.perfil.nome, agoraLocal()); esquecerNoCache(a.id); toast('Atendimento movido para a Lixeira.'); refresh(); return true; } catch (e) { toast(e.message, true); return false; }
   } });
-  // chamado voltou do setor: qualquer técnico pode abrir a próxima ida
   if (!novo && !chamado && a.smax && PODE_REABRIR.includes(a.status || '')) botoes.push({ t: '↺ Chamado voltou: nova ida', fn: async () => {
     let ult = a;
     try { ult = (await smaxDuplicado(a.smax, null)) || a; } catch (e) { toast(e.message, true); return false; }
     if (!PODE_REABRIR.includes(ult.status || '')) { toast(`Este chamado já tem uma ida mais nova (${ult.status}). Abra a mais recente.`, true); return false; }
     setTimeout(() => formAtendimento(ult, { novaIda: true }), 0); return true;
   } });
-  // agendamento: quando chegar o dia, o atendimento vira a próxima ida (conta no mês em que foi feito)
   if (!novo && !chamado && a.status === 'AGENDADO') botoes.push(
     { t: '↻ Reagendar', fn: async () => { setTimeout(() => formAtendimento(a, { novaIda: true, reagendar: true }), 0); return true; } },
     { t: '▶ Atender agendamento', fn: async () => { setTimeout(() => formAtendimento(a, { novaIda: true, agendado: true }), 0); return true; } });
@@ -900,7 +926,6 @@ function formAtendimento(a, opts = {}) {
   else botoes.push({ t: 'Fechar', primary: true });
   modal(reag ? `Chamado ${esc(chamado.smax)} · reagendar` : agend ? `Chamado ${esc(chamado.smax)} · atender agendamento` : chamado ? `Chamado ${esc(chamado.smax)} · nova ida` : novo ? 'Novo atendimento' : `Chamado ${esc(a.smax || '')}${fech.length ? ` <span class="idas">↺ ${fech.length + 1} idas</span>` : ''}`, body, botoes, chamado || fech.length ? 'lg' : '', ov => {
     const f = $('#fa', ov);
-    // corrige a comarca para o nome oficial ao sair do campo
     if (podeEditar) f.comarca.addEventListener('change', () => {
       const v = f.comarca.value; if (!v.trim()) return;
       const ofi = comarcaOficial(v);
@@ -908,7 +933,6 @@ function formAtendimento(a, opts = {}) {
       else if (listaComarcas().length) avisoComarca($('#e', ov), v, ov);
       else f.comarca.value = tituloComarca(v);
     });
-    // aviso de chamado duplicado já ao sair do campo SMAX
     if (podeEditar && !chamado && !fech.length) f.smax.addEventListener('change', async () => {
       const v = s(f.smax.value); if (!v || (!novo && v === a.smax)) return erroBox($('#e', ov), '');
       const dup = await smaxDuplicado(v, a.id).catch(() => null);
@@ -935,7 +959,7 @@ function formAtendimento(a, opts = {}) {
     const ligaDia = () => { const on = f.dia_inteiro.checked || f.juri.checked; if (f.juri.checked) f.dia_inteiro.checked = true;
       if (on) { f.ag_ini.value = DIA_INTEIRO[0]; f.ag_fim.value = DIA_INTEIRO[1]; } if (podeEditar) { f.ag_ini.disabled = f.ag_fim.disabled = on; } };
     f.dia_inteiro.onchange = () => { if (!f.dia_inteiro.checked) f.juri.checked = false; ligaDia(); }; f.juri.onchange = ligaDia; if (f.dia_inteiro.checked || f.juri.checked) ligaDia();
-    if (reag) { $('#agBox', ov).hidden = true; $$('.seg[data-name=status] button', f).forEach(b => b.disabled = true); f.reag_para.focus(); }   // continua AGENDADO; a nova data fica no quadro de cima
+    if (reag) { $('#agBox', ov).hidden = true; $$('.seg[data-name=status] button', f).forEach(b => b.disabled = true); f.reag_para.focus(); }
     else if (chamado && !agend) f.dev_motivo.focus();
   });
 }
@@ -951,14 +975,12 @@ function avisoComarca(el, v, ov) {
     const nova = tituloComarca(resp);
     const ja = comarcaOficial(nova);
     if (ja) { $('#fa', ov).comarca.value = ja; erroBox(el, ''); toast(`"${ja}" já estava na lista.`); return; }
-    // evita duplicata por erro de digitação (ex.: "Atibia" quando já existe "Atibaia")
     const pare = comarcasParecidas(nova);
     if (pare.length && !confirm(`Já existem comarcas parecidas na lista:\n\n${pare.join(', ')}\n\nTem certeza de que "${nova}" é uma comarca diferente?`)) return;
     try { await cadastrarComarca(nova); $('#fa', ov).comarca.value = nova; erroBox(el, ''); toast(`"${nova}" cadastrada na lista.`); }
     catch (e) { toast(e.message, true); }
   };
 }
-// comarcas com nome parecido (mesmo começo ou diferença de 1–2 letras)
 function comarcasParecidas(v) {
   const k = chaveComarca(v);
   const dist = (a, b) => { const m = Array.from({ length: a.length + 1 }, (_, i) => [i]); for (let j = 1; j <= b.length; j++) m[0][j] = j;
@@ -966,7 +988,6 @@ function comarcasParecidas(v) {
     return m[a.length][b.length]; };
   return listaComarcas().filter(c => { const kc = chaveComarca(c); return kc.slice(0, 5) === k.slice(0, 5) || dist(kc, k) <= 2; }).slice(0, 6);
 }
-// qualquer técnico pode acrescentar uma comarca (sem apagar as que já existem)
 async function cadastrarComarca(nome) {
   await api.adicionarComarca(nome, S.perfil.nome);
   S.comarcasOficiais = await api.lerComarcas();
@@ -981,10 +1002,8 @@ async function salvarListaComarcas(l) {
   return final;
 }
 
-// procura outro atendimento com o mesmo SMAX (em qualquer mês)
 async function smaxDuplicado(smax, idAtual) {
   const l = (await api.buscarPorSmax(smax)).filter(x => x.id !== idAtual && foraDaLixeira(x));
-  // a ida mais recente do chamado
   l.sort((x, y) => ((y.ida || 1) - (x.ida || 1)) || (y.inicio || y.data_ref || '').localeCompare(x.inicio || x.data_ref || ''));
   return l[0] || null;
 }
@@ -1000,7 +1019,6 @@ function avisoDuplicado(el, dup, ov) {
   if ($('#atenderDup', el)) $('#atenderDup', el).onclick = () => { ov.remove(); formAtendimento(dup, { novaIda: true, agendado: true }); };
   if ($('#reagDup', el)) $('#reagDup', el).onclick = () => { ov.remove(); formAtendimento(dup, { novaIda: true, reagendar: true }); };
 }
-// linha do tempo do histórico (mais recente primeiro)
 function linhaDoTempo(h) {
   if (!Array.isArray(h) || !h.length) return '<p class="hint" style="margin:4px 0 8px">Ainda sem histórico. As próximas mudanças de status e observações vão aparecer aqui.</p>';
   return `<ol class="timeline">${[...h].reverse().map(e => `<li>
@@ -1016,7 +1034,11 @@ async function telaAgenda(main) {
   main.innerHTML = `<div class="head"><div><h2>Agenda</h2><p>Atendimentos com status AGENDADO, em ordem de horário.</p></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${botaoAtu()}<button class="btn primary" id="novo">+ Novo atendimento</button></div></div><div id="lista"><div class="empty">Carregando…</div></div>`;
   $('#novo').onclick = () => formAtendimento(null);
-  let lista; try { lista = (await api.listarAgendados({ uid: isAdmin() ? null : S.perfil.id })).filter(foraDaLixeira); S.assin_agenda = assinatura(lista); } catch (e) { return toast(e.message, true); }
+  let lista; try { 
+    lista = (await api.listarAgendados({ uid: isAdmin() ? null : S.perfil.id })).filter(foraDaLixeira); 
+    lista = filtrarChamadosPorPerfil(lista);
+    S.assin_agenda = assinatura(lista); 
+  } catch (e) { return toast(e.message, true); }
   lista.sort((a, b) => (a.agendamento || '9999').localeCompare(b.agendamento || '9999'));
   if (!lista.length) { $('#lista').innerHTML = `<div class="card"><div class="empty">Nenhum atendimento agendado no momento.</div></div>`; return; }
   const agora = agoraLocal();
@@ -1044,31 +1066,25 @@ function diasUteis(mes) {
   let n = 0; for (let d = 1; d <= ate; d++) { const w = new Date(y, m - 1, d).getDay(); if (w && w < 6) n++; }
   return n;
 }
-// minutos de um atendimento (só quando tem início e término)
 function minutosDe(a) {
   if (!a.inicio || !a.termino) return null;
   const m = Math.round((new Date(a.termino) - new Date(a.inicio)) / 60000);
   return isNaN(m) || m < 0 ? null : m;
 }
-// soma as horas e calcula o tempo médio por atendimento
 function tempos(r, lista) {
   const ms = lista.map(minutosDe).filter(m => m !== null);
   r.min_total = ms.reduce((t, m) => t + m, 0);
   r.com_tempo = ms.length;
   r.min_medio = ms.length ? Math.round(r.min_total / ms.length) : null;
 }
-// tempo gasto nas tentativas de contato (fica separado dos atendimentos)
 function temposTent(r, lista) {
   const ms = lista.filter(a => !contaComoAtendido(a)).map(minutosDe).filter(m => m !== null);
   r.tent_min_total = ms.reduce((t, m) => t + m, 0);
   r.tent_com_tempo = ms.length;
   r.tent_min_medio = ms.length ? Math.round(r.tent_min_total / ms.length) : null;
 }
-// até 59 minutos: "45 min"; a partir de 60: "1h", "1h 10min", "8h 23min"
 const fmtMinCurto = m => m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}min` : ''}`;
 const fmtMin = m => m === null || m === undefined ? '—' : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
-
-// "Tentativa de contato" não conta como chamado atendido no painel
 const contaComoAtendido = a => a.status !== 'TENT CONTATO';
 
 function montarPainel(mes, lista) {
@@ -1079,14 +1095,13 @@ function montarPainel(mes, lista) {
     const r = { uid, nome: nomeDe(uid, (m[0] || {}).tecnico), encaminhado: c('ENCAMINHADO'), tent_contato: c('TENT CONTATO'), agendado: c('AGENDADO'), fechado: c('FECHADO'), devolvido: c('DEVOLVIDO'),
       reabertos: m.filter(a => a._reaberto && contaComoAtendido(a)).length, chamados: new Set(m.filter(contaComoAtendido).map(a => a.smax || a.id)).size,
       home: m.filter(a => a.home_local === 'HOME').length, local: m.filter(a => a.home_local === 'LOCAL').length };
-    r.total = r.encaminhado + r.agendado + r.fechado + r.devolvido;   // tentativa de contato fica de fora
+    r.total = r.encaminhado + r.agendado + r.fechado + r.devolvido;
     tempos(r, m.filter(contaComoAtendido)); temposTent(r, m); return r;
   }).sort((a, b) => a.nome.localeCompare(b.nome));
   const total = { nome: 'TOTAL' };
   for (const k of ['encaminhado', 'tent_contato', 'agendado', 'fechado', 'devolvido', 'reabertos', 'home', 'local', 'total']) total[k] = linhas.reduce((t, r) => t + r[k], 0);
   const atendidos = lista.filter(contaComoAtendido);
   total.chamados = new Set(atendidos.map(a => a.smax || a.id)).size;
-  // devoluções por setor (com os motivos)
   const dv = {}; lista.filter(a => a.status === 'DEVOLVIDO').forEach(a => { const st = (a.devolucao && a.devolucao.setor) || a.encaminhado_para || 'Sem setor'; const g = dv[st] = dv[st] || { setor: st, n: 0, motivos: {}, par: [], itens: [] }; g.n++; g.itens.push(a); const pm = parado(a); if (pm !== null) g.par.push(pm); const mo = (a.devolucao && a.devolucao.motivo) || 'Sem motivo'; g.motivos[mo] = (g.motivos[mo] || 0) + 1; });
   const enviados = {}; atendidos.forEach(a => { if (a.encaminhado_para) enviados[a.encaminhado_para] = (enviados[a.encaminhado_para] || 0) + 1; });
   const devolucoes = Object.values(dv).map(g => ({ ...g, enviados: enviados[g.setor] || g.n, parMedio: g.par.length ? Math.round(g.par.reduce((t, x) => t + x, 0) / g.par.length) : null })).sort((a, b) => b.n - a.n);
@@ -1104,21 +1119,29 @@ async function telaPainel(main) {
     <div id="pn"><div class="empty">Carregando…</div></div>`;
   $('#fMes').onchange = e => { if (e.target.value) { S.mes = e.target.value; S.painelDia = ''; render(); } };
   $('#exp').onclick = exportarExcel;
-  let lista; try { const docs = await docsDoMes(S.mes); S.assin_painel = assinatura(docs); lista = explodir(docs, S.mes); } catch (e) { return toast(e.message, true); }
+  let lista; try { 
+    let docs = await docsDoMes(S.mes); 
+    // Aplicar estritamente o filtro de perfil: técnicos comuns veem apenas os seus próprios dados no painel
+    docs = filtrarChamadosPorPerfil(docs);
+    S.assin_painel = assinatura(docs); 
+    lista = explodir(docs, S.mes); 
+  } catch (e) { return toast(e.message, true); }
   S.comarcas = [...new Set([...lista.map(a => a.comarca), ...(S.comarcas || [])])];
-  const mesGeral = montarPainel(S.mes, lista);        // lista de técnicos do mês (para os seletores)
+  const mesGeral = montarPainel(S.mes, lista);
   if (S.painelTec && !mesGeral.linhas.some(r => r.uid === S.painelTec)) S.painelTec = '';
   if (S.painelDia && S.painelDia.slice(0, 7) !== S.mes) S.painelDia = '';
   const semana = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 
   const desenhar = () => {
-    const uid = S.painelTec || '', dia = S.painelDia || '';
-    const doMesTec = uid ? lista.filter(a => a.uid === uid) : lista;   // calendário e tentativas por dia: mês inteiro
-    const base = dia ? lista.filter(a => a.data_ref === dia) : lista;   // filtro de dia vale para o resto do painel
+    const admin = isAdmin();
+    const uid = admin ? (S.painelTec || '') : S.perfil.id;
+    const dia = S.painelDia || '';
+    const doMesTec = uid ? lista.filter(a => a.uid === uid) : lista;
+    const base = dia ? lista.filter(a => a.data_ref === dia) : lista;
     const geral = dia ? montarPainel(S.mes, base) : mesGeral;
     const sel = geral.linhas.find(r => r.uid === uid) || mesGeral.linhas.find(r => r.uid === uid);
     const doSel = uid ? base.filter(a => a.uid === uid) : base;
-    const p = uid ? montarPainel(S.mes, doSel) : geral;  // cartões e gráficos seguem os filtros
+    const p = uid ? montarPainel(S.mes, doSel) : geral;
     const T = uid ? (geral.linhas.find(r => r.uid === uid) || sel) : geral.total;
     const media = p.diasUteis ? +(T.total / p.diasUteis).toFixed(1) : 0;
     const [yy, mm] = S.mes.split('-').map(Number), nDias = new Date(yy, mm, 0).getDate();
@@ -1126,20 +1149,20 @@ async function telaPainel(main) {
     let opcDias = '<option value="">Todos os dias</option>';
     for (let d = 1; d <= nDias; d++) {
       const iso = `${S.mes}-${String(d).padStart(2, '0')}`, q = contDia[iso] || 0;
-      opcDias += `<option value="${iso}" ${dia === iso ? 'selected' : ''}>${String(d).padStart(2, '0')}/${S.mes.slice(5, 7)} (${semana[new Date(yy, mm - 1, d).getDay()]})${q ? ` — ${q}` : ''}</option>`;
+      opcDias += `<option value="${iso}" ${dia === iso ? 'selected' : ''}>${String(d).padStart(2, '0')}/${S.mes.slice(5, 7)} (${semana[new Date(yy, mm - 1, d).getDay()]}${q ? ` — ${q}` : ''})</option>`;
     }
-    const filtros = [uid ? `<b>${esc(sel.nome)}</b>` : '', dia ? `<b>${fmtData(dia)}</b>` : ''].filter(Boolean).join(' · ');
-    const linha = (r, tot) => `<tr class="${tot ? 'total' : ''} click ${!tot && r.uid === uid ? 'sel' : ''} ${uid && !tot && r.uid !== uid ? 'apagado' : ''}" data-uid="${tot ? '' : esc(r.uid)}" title="${tot ? 'Ver todos os técnicos' : 'Ver só ' + esc(r.nome)}">
+    const filtros = [admin && uid ? `<b>${esc(sel?.nome || '')}</b>` : '', dia ? `<b>${fmtData(dia)}</b>` : ''].filter(Boolean).join(' · ');
+    const linha = (r, tot) => `<tr class="${tot ? 'total' : ''} click ${!tot && r.uid === uid ? 'sel' : ''} ${admin && uid && !tot && r.uid !== uid ? 'apagado' : ''}" data-uid="${tot ? '' : esc(r.uid)}" title="${tot ? 'Ver todos os técnicos' : 'Ver só ' + esc(r.nome)}">
       <td>${esc(r.nome)}${tot ? '' : marcaDesligado(r.uid)}</td><td class="num">${r.encaminhado}</td><td class="num">${r.tent_contato}</td><td class="num">${r.agendado}</td><td class="num">${r.fechado}</td><td class="num">${r.devolvido || ''}</td><td class="num">${r.home}</td><td class="num">${r.local}</td><td class="num"><b>${r.total}</b></td><td class="num">${r.chamados}${r.reabertos ? ` <span class="muted" title="chamados reabertos">(${r.reabertos}↺)</span>` : ''}</td><td class="num">${r.com_tempo ? fmtMin(r.min_total) : '—'}</td><td class="num tempo" title="${r.com_tempo} atendimento(s) com início e término">${fmtMin(r.min_medio)}</td><td class="num col-tent">${r.tent_com_tempo ? fmtMin(r.tent_min_total) : '—'}</td><td class="num col-tent tempo-tent" title="${r.tent_com_tempo} tentativa(s) com início e término">${fmtMin(r.tent_min_medio)}</td></tr>`;
     const maxD = Math.max(1, ...p.destinos.map(d => d.n)), maxC = Math.max(1, ...p.porComarca.map(d => d.n));
     $('#pn').innerHTML = `
       <div class="filtro-tec">
-        <label>Técnico:
-          <select id="pTec"><option value="">Todos os técnicos</option>${mesGeral.linhas.map(r => `<option value="${esc(r.uid)}" ${r.uid === uid ? 'selected' : ''}>${esc(r.nome)}${desligado(r.uid) ? ' (desligado)' : ''}</option>`).join('')}</select></label>
+        ${admin ? `<label>Técnico:
+          <select id="pTec"><option value="">Todos os técnicos</option>${mesGeral.linhas.map(r => `<option value="${esc(r.uid)}" ${r.uid === uid ? 'selected' : ''}>${esc(r.nome)}${desligado(r.uid) ? ' (desligado)' : ''}</option>`).join('')}</select></label>` : ''}
         <label>Dia:
           <select id="pDia">${opcDias}</select></label>
         ${S.mes === mesAtual() ? '<button type="button" class="btn" id="pHoje">Hoje</button>' : ''}
-        ${filtros ? `<span class="filtro-info">Mostrando apenas ${filtros} · <a href="#" id="limparFiltros">limpar filtros</a>${dia ? ` · <a href="#" id="listaDia">ver atendimentos do dia</a>` : ''}</span>` : '<span class="filtro-info">Clique em um técnico na tabela ou em um dia do calendário para filtrar.</span>'}
+        ${filtros ? `<span class="filtro-info">Mostrando apenas ${filtros} · <a href="#" id="limparFiltros">limpar filtros</a>${dia ? ` · <a href="#" id="listaDia">ver atendimentos do dia</a>` : ''}</span>` : admin ? '<span class="filtro-info">Clique em um técnico na tabela ou em um dia do calendário para filtrar.</span>' : ''}
       </div>
       <div class="kpis">
         <div class="kpi enc"><span>Encaminhado</span><b>${T.encaminhado}</b></div>
@@ -1155,8 +1178,8 @@ async function telaPainel(main) {
       </div>
       <div class="card"><h3>Por técnico${dia ? ` <span class="muted">· ${fmtData(dia)}</span>` : ''}</h3><div class="tablewrap"><table class="tab-tec">
           <thead><tr><th>Técnico</th><th class="num">Encaminhado</th><th class="num" title="Não conta no total">Tent. contato*</th><th class="num">Agendado</th><th class="num">Fechado</th><th class="num" title="Idas que o setor devolveu (contam no total)">Devolvido</th><th class="num">Remoto/Home</th><th class="num">Local</th><th class="num">Total geral</th><th class="num" title="Chamados SMAX diferentes. Entre parênteses: idas de chamados reabertos">Chamados</th><th class="num">Horas totais</th><th class="num">Tempo médio</th><th class="num col-tent">Horas em tent.</th><th class="num col-tent">Média por tent.</th></tr></thead>
-          <tbody>${(uid ? geral.linhas.filter(r => r.uid === uid) : geral.linhas).map(r => linha(r)).join('')}${uid ? '' : linha(geral.total, true)}</tbody></table></div>
-          ${uid ? `<div class="pad hint" style="padding-bottom:0">Mostrando só ${esc(sel.nome)}. <a href="#" id="verTodos2">Ver todos os técnicos</a></div>` : ''}
+          <tbody>${(admin && uid ? geral.linhas.filter(r => r.uid === uid) : geral.linhas).map(r => linha(r)).join('')}${admin && !uid ? linha(geral.total, true) : ''}</tbody></table></div>
+          ${admin && uid ? `<div class="pad hint" style="padding-bottom:0">Mostrando só ${esc(sel?.nome || '')}. <a href="#" id="verTodos2">Ver todos os técnicos</a></div>` : ''}
           <div class="pad hint"><b>Chamado devolvido e reaberto</b>: cada ida conta como um atendimento, no dia e para o técnico que atendeu. A coluna <b>Chamados</b> mostra quantos SMAX diferentes foram atendidos (↺ = idas de chamados reabertos).<br><b>Tentativa de contato não conta como chamado atendido</b>: aparece na coluna própria, mas fica fora do total geral, das horas, do tempo médio, dos gráficos e do calendário.<br>${dia ? 'Números do dia ' + fmtData(dia) + '.' : `Média diária = minutos de atendimento ÷ ${p.diasUteis} dias úteis (seg. a sex.) ${p.mes === mesAtual() ? 'até hoje' : 'do mês'}; embaixo, a quantidade de atendimentos por dia.`}
             Tempo médio = horas de atendimento ÷ atendimentos com início e término preenchidos.</div></div>
       <div class="graficos">
@@ -1170,37 +1193,37 @@ async function telaPainel(main) {
           <div class="card"><h3>Comarcas com mais atendimentos${filtros ? ` <span class="muted">· ${filtros.replace(/<\/?b>/g, '')}</span>` : ''}</h3><div class="pad bars">${p.porComarca.length ? p.porComarca.map(d => `<div class="bar"><span title="${esc(d.comarca)}">${esc(d.comarca)}</span><div class="t"><i style="width:${d.n / maxC * 100}%"></i></div><b>${d.n}</b></div>`).join('') : `<div class="muted">Sem dados ${dia ? 'no dia' : 'no mês'}.</div>`}</div></div>
       </div>
       <div class="card cal-card">
-        <div class="cal-head"><h3>Calendário de ${esc(nomeMes(S.mes))}${uid ? ` <span class="muted">· ${esc(sel.nome)}</span>` : ' <span class="muted">· todos os técnicos</span>'}</h3>
-          <select id="calTec" aria-label="Técnico"><option value="">Todos os técnicos</option>${mesGeral.linhas.map(r => `<option value="${esc(r.uid)}" ${r.uid === uid ? 'selected' : ''}>${esc(r.nome)}${desligado(r.uid) ? ' (desligado)' : ''}</option>`).join('')}</select></div>
+        <div class="cal-head"><h3>Calendário de ${esc(nomeMes(S.mes))}${admin && uid ? ` <span class="muted">· ${esc(sel?.nome || '')}</span>` : ' <span class="muted">· todos os técnicos</span>'}</h3>
+          ${admin ? `<select id="calTec" aria-label="Técnico"><option value="">Todos os técnicos</option>${mesGeral.linhas.map(r => `<option value="${esc(r.uid)}" ${r.uid === uid ? 'selected' : ''}>${esc(r.nome)}${desligado(r.uid) ? ' (desligado)' : ''}</option>`).join('')}</select>` : ''}</div>
         <div class="pad" id="cal"></div>
       </div>
       <div class="card cal-card">
-        <h3>Tentativas de contato por dia${uid ? ` <span class="muted">· ${esc(sel.nome)}</span>` : ' <span class="muted">· todos os técnicos</span>'}</h3>
+        <h3>Tentativas de contato por dia${admin && uid ? ` <span class="muted">· ${esc(sel?.nome || '')}</span>` : ' <span class="muted">· todos os técnicos</span>'}</h3>
         <div class="tablewrap" id="tentDia"></div>
       </div>`;
     calendario($('#cal'), doMesTec, '', { sel: dia, aoClicar: iso => escolherDia(iso === dia ? '' : iso) });
-    tentativasPorDia($('#tentDia'), doMesTec, !uid);
+    tentativasPorDia($('#tentDia'), doMesTec, admin && !uid);
     const escolher = v => { S.painelTec = v; desenhar(); };
     const escolherDia = v => { S.painelDia = v; desenhar(); };
     $('#pDia').onchange = e => escolherDia(e.target.value);
     if ($('#pHoje')) $('#pHoje').onclick = () => escolherDia(hojeISO());
     if ($('#limparFiltros')) $('#limparFiltros').onclick = e => { e.preventDefault(); S.painelTec = ''; S.painelDia = ''; desenhar(); };
     if ($('#listaDia')) $('#listaDia').onclick = e => { e.preventDefault(); diaDetalhe(Number(dia.slice(8, 10)), doSel); };
-    $('#pTec').onchange = e => escolher(e.target.value);
-    $('#calTec').onchange = e => escolher(e.target.value);
+    if ($('#pTec')) $('#pTec').onchange = e => escolher(e.target.value);
+    if ($('#calTec')) $('#calTec').onchange = e => escolher(e.target.value);
     if ($('#verTodos2')) $('#verTodos2').onclick = e => { e.preventDefault(); escolher(''); };
-    // devoluções: clique no setor abre/fecha a lista; clique num item abre o chamado
     $$('#pn tr.dev-set').forEach(tr => tr.onclick = () => { S.devAberto = S.devAberto === tr.dataset.setor ? '' : tr.dataset.setor; desenhar(); });
     $$('#pn tr.dev-det li').forEach(li => li.onclick = () => {
       const g = p.devolucoes[li.dataset.g], l = [...g.itens].sort((x, y) => ((y.devolucao || {}).em || '').localeCompare((x.devolucao || {}).em || ''));
       const a = l[li.dataset.i]; if (a) formAtendimento(a._doc || a);
     });
-    $$('#pn tbody tr[data-uid]').forEach(tr => tr.onclick = () => escolher(tr.dataset.uid === uid ? '' : tr.dataset.uid));
+    if (admin) {
+      $$('#pn tbody tr[data-uid]').forEach(tr => tr.onclick = () => escolher(tr.dataset.uid === uid ? '' : tr.dataset.uid));
+    }
   };
   desenhar();
 }
 
-// calendário do mês: quantidade de atendimentos por dia; clique no dia mostra a lista
 function calendario(el, lista, uid, opts = {}) {
   const [y, m] = S.mes.split('-').map(Number);
   const dias = new Date(y, m, 0).getDate(), inicioSem = new Date(y, m - 1, 1).getDay();
@@ -1226,7 +1249,6 @@ function calendario(el, lista, uid, opts = {}) {
     ? opts.aoClicar(`${S.mes}-${String(b.dataset.dia).padStart(2, '0')}`)
     : diaDetalhe(Number(b.dataset.dia), porDia[b.dataset.dia]));
 }
-// quadro diário das tentativas de contato: quantidade, horas e média por dia
 function tentativasPorDia(el, lista, mostrarTec) {
   const tent = lista.filter(a => !contaComoAtendido(a));
   if (!tent.length) { el.innerHTML = '<div class="empty" style="padding:24px">Nenhuma tentativa de contato neste mês.</div>'; return; }
@@ -1241,7 +1263,7 @@ function tentativasPorDia(el, lista, mostrarTec) {
       tecs = Object.entries(por).map(([u, la]) => { const t = {}; temposTent(t, la); return `${esc(nomeDe(u, la[0].tecnico))} <span class="muted">${la.length}${t.tent_com_tempo ? ' · ' + fmtMin(t.tent_min_medio) : ''}</span>`; }).join(' · ');
     }
     const [yy, mm, dd] = k.split('-');
-    return `<tr class="click" data-dia="${Number(dd)}"><td><b>${dd}/${mm}</b> <span class="muted">${semana[new Date(+yy, mm - 1, +dd).getDay()]}</span></td>
+    return `<tr class="click" data-dia="${Number(dd)}"><td><b>${dd}/${mm}</b> <span class="muted">${semana[new Date(+yy, mm - 1, +dd].getDay()]}</span></td>
       <td class="num">${l.length}</td><td class="num">${r.tent_com_tempo ? fmtMin(r.tent_min_total) : '—'}</td><td class="num tempo-tent">${fmtMin(r.tent_min_medio)}</td>${mostrarTec ? `<td class="wrap">${tecs}</td>` : ''}</tr>`;
   });
   const T = {}; temposTent(T, tent);
@@ -1269,11 +1291,14 @@ function diaDetalhe(d, l) {
   });
 }
 
-// --------------------------------------------------------------- Exportar Excel (mesmo layout da planilha)
 async function exportarExcel() {
   if (!window.ExcelJS) return toast('Aguarde o carregamento e tente de novo.', true);
   toast('Gerando planilha…');
-  let lista; try { lista = explodir(await docsDoMes(S.mes, true), S.mes); } catch (e) { return toast(e.message, true); }
+  let lista; try { 
+    let docs = await docsDoMes(S.mes, true);
+    docs = filtrarChamadosPorPerfil(docs);
+    lista = explodir(docs, S.mes); 
+  } catch (e) { return toast(e.message, true); }
   const p = montarPainel(S.mes, lista);
   const wb = new ExcelJS.Workbook();
   const azul = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3A5F' } };
@@ -1309,7 +1334,6 @@ async function exportarExcel() {
   }
   ws.getColumn(2).width = 18; for (let c = 3; c <= 15; c++) ws.getColumn(c).width = 14; ws.getColumn(17).width = 14; ws.getColumn(20).width = 18;
 
-  // aba com as tentativas de contato por dia e por técnico
   const wt = wb.addWorksheet('TENTATIVAS POR DIA');
   ['DATA', 'TÉCNICO', 'TENTATIVAS', 'HORAS', 'MÉDIA POR TENTATIVA'].forEach((h, i) => { const c = wt.getCell(1, 1 + i); c.value = h; cab(c); });
   const grupos = {};
@@ -1413,7 +1437,6 @@ async function telaUsuarios(main) {
   };
   $('#imp').onclick = () => $('#arq').click();
   $('#arq').onchange = importar;
-  // ----- comarcas
   const recarregar = () => render();
   const adicionar = async () => {
     const v = $('#novaCom').value.trim(); if (!v) return;
@@ -1428,7 +1451,6 @@ async function telaUsuarios(main) {
   });
   $('#sugCom').onclick = async () => {
     let todos; try { todos = await api.listarTodosAtendimentos(); } catch (e) { return toast(e.message, true); }
-    // agrupa as variações; prefere a forma com acento (ex.: "Bragança" em vez de "Braganca")
     const grupos = new Map();
     todos.forEach(a => { const k = chaveComarca(a.comarca); if (!k || k === '(nao informada)') return; const g = grupos.get(k) || []; g.push(a.comarca.trim()); grupos.set(k, g); });
     const sugestao = [...grupos.values()].map(g => tituloComarca(g.find(v => /[^\x00-\x7f]/.test(v)) || g[0]));
@@ -1464,8 +1486,6 @@ async function telaUsuarios(main) {
   });
 }
 
-// desligar da equipe: tira o acesso e esconde das telas, mantendo os atendimentos.
-// Chamados em aberto podem ser transferidos para outro técnico.
 const ABERTOS = ['AGENDADO', 'TENT CONTATO', 'ENCAMINHADO'];
 async function desligarUsuario(u) {
   let todos;
